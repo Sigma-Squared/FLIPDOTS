@@ -2,6 +2,10 @@
 #include <WiFi.h>
 #include "FLIPDOTS.h"
 
+#define DEBUG 1
+#define WIFI_TIMEOUT 10000
+#define NTP_CONFIGTIME_TRYCOUNT 4
+
 const char *ssid = "Skynet";
 const char *password = "";
 const char *ntpServer = "pool.ntp.org";
@@ -33,7 +37,7 @@ void displayTest(void *params)
 
 void displayError()
 {
-    const byte[] error = {
+    const byte errorDisplay[] = {
         0b00000000,
         0b00001000,
         0b00001000,
@@ -41,7 +45,25 @@ void displayError()
         0b00000000,
         0b00001000,
         0b00000000};
-    display.write(error);
+    display.write(errorDisplay);
+}
+
+bool displayTime()
+{
+    time_t now;
+    time(&now);
+    localtime_r(&now, timeInfo);
+    if (timeInfo->tm_year <= (2016 - 1900))
+    {
+        return false;
+    }
+    char timeStr[] = "0000";
+    strftime(timeStr, sizeof(timeStr), "%I%M", timeInfo);
+#if DEBUG
+    Serial.printf("Time: %s\n", timeStr);
+#endif
+    display.write3x3char4(timeStr[0], timeStr[1], timeStr[2], timeStr[3]);
+    return true;
 }
 
 void taskDisplayLoader(void *params)
@@ -83,65 +105,107 @@ void taskDisplayLoader(void *params)
     }
 }
 
-bool connectWiFiAndConfigTime(TaskHandle_t *showLoaderTask)
+void taskUpdateClock(void *params)
+{
+    auto initialDelay = (uint32_t)params;
+#if DEBUG
+    Serial.printf("Initial delay: %is\n", initialDelay / 1000);
+#endif
+    vTaskDelay(initialDelay);
+
+    TickType_t lastWakeTime = xTaskGetTickCount();
+    while (true)
+    {
+        displayTime();
+        vTaskDelayUntil(&lastWakeTime, 60 * 1000);
+    }
+}
+
+bool connectWiFiAndConfigTime()
 {
     // Show loading screen 1
-    xTaskCreate(taskDisplayLoader, "taskDisplayLoader", 1024, (void *)0, 1, showLoaderTask);
+    TaskHandle_t showLoaderTask;
+    xTaskCreate(taskDisplayLoader, "taskDisplayLoader", 1024, (void *)0, 1, &showLoaderTask);
 
     // Connect to WiFi
     WiFi.mode(WIFI_STA);
     digitalWrite(LED_BUILTIN, HIGH);
+#if DEBUG
+    Serial.print("Connecting Wifi...");
+#endif
     WiFi.begin(ssid, password);
-    long startTime = millis();
-    while (WiFi.status() != WL_CONNECTED && (millis() - startTime) < 10000)
+    long startTime = xTaskGetTickCount();
+    while (WiFi.status() != WL_CONNECTED && (xTaskGetTickCount() - startTime) < WIFI_TIMEOUT)
     {
         vTaskDelay(500);
     }
     if (WiFi.status() != WL_CONNECTED) // Couldn't connect to WiFi
     {
+#if DEBUG
+        Serial.println("Failed.");
+#endif
+        vTaskDelete(showLoaderTask);
         return false;
     }
+#if DEBUG
+    Serial.println("Connected.");
+#endif
 
     // Show loading screen 2
     vTaskDelete(showLoaderTask);
-    xTaskCreate(taskDisplayLoader, "taskDisplayLoader", 1024, (void *)1, 1, showLoaderTask);
+    xTaskCreate(taskDisplayLoader, "taskDisplayLoader", 1024, (void *)1, 1, &showLoaderTask);
 
     // Configure time
-    uint8_t tryCount = 4;
+#if DEBUG
+    Serial.print("Configuring time...");
+#endif
+    uint8_t tryCount = NTP_CONFIGTIME_TRYCOUNT;
     while (!getLocalTime(timeInfo) && tryCount--)
     {
         configTime(-28800, 0, ntpServer);
     }
     if (!getLocalTime(timeInfo)) // Couldn't configure time
     {
+        vTaskDelete(showLoaderTask);
+#if DEBUG
+        Serial.println("Failed");
+#endif
         return false;
     }
-
+#if DEBUG
+    Serial.println("Done.");
+#endif
     // Cleanup
+    vTaskDelete(showLoaderTask);
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
     digitalWrite(LED_BUILTIN, LOW);
+    return true;
 }
 
 // the setup function runs once when you press reset or power the board
 void setup()
 {
+#if DEBUG
+    Serial.begin(115200);
+    Serial.setDebugOutput(true);
+#endif
     timeInfo = new tm();
     pinMode(LED_BUILTIN, OUTPUT);
     display.begin();
     // xTaskCreate(displayTest, "displayTest", 1024, NULL, 1, NULL);
     //display.write3x3char4('A', 'B', 'C', 'D');
     //xTaskCreate(taskConnectWiFiAndConfigTime, "taskConnectWiFiAndConfigTime", 1024, NULL, 1, NULL);
-    TaskHandle_t showLoaderTask;
-    if (!connectWiFiAndConfigTime(&showLoaderTask))
+
+    if (!connectWiFiAndConfigTime())
     {
         displayError();
         while (1)
             ;
     }
-    char timeStr[] = "0000";
-    strftime(timeStr, sizeof(timeStr), "%I%M", timeInfo);
-    display.write3x3char4(timeStr[0], timeStr[1], timeStr[2], timeStr[3]);
+    displayTime();
+    uint32_t initialDelay = (59 - timeInfo->tm_sec) * 1000 + 500;
+    xTaskCreate(taskUpdateClock, "taskUpdateClock", 2048, (void *)initialDelay, 1, NULL);
 }
 
 // the loop function runs over and over again forever
