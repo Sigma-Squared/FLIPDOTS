@@ -183,7 +183,6 @@ bool connectWiFiAndConfigTime()
     return true;
 }
 
-// the setup function runs once when you press reset or power the board
 void setup()
 {
 #if DEBUG
@@ -193,9 +192,6 @@ void setup()
     timeInfo = new tm();
     pinMode(LED_BUILTIN, OUTPUT);
     display.begin();
-    // xTaskCreate(displayTest, "displayTest", 1024, NULL, 1, NULL);
-    //display.write3x3char4('A', 'B', 'C', 'D');
-    //xTaskCreate(taskConnectWiFiAndConfigTime, "taskConnectWiFiAndConfigTime", 1024, NULL, 1, NULL);
 
     if (!connectWiFiAndConfigTime())
     {
@@ -208,7 +204,6 @@ void setup()
     xTaskCreate(taskUpdateClock, "taskUpdateClock", 2048, (void *)initialDelay, 1, NULL);
 }
 
-// the loop function runs over and over again forever
 void loop()
 {
     vTaskSuspend(NULL);
