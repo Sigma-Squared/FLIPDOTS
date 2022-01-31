@@ -5,6 +5,7 @@
 #define DEBUG 1
 #define WIFI_TIMEOUT 10000
 #define NTP_CONFIGTIME_TRYCOUNT 4
+#define UPDATE_EVERY_SECOND 0
 
 const char *ssid = "Skynet";
 const char *password = "";
@@ -12,28 +13,6 @@ const char *ntpServer = "pool.ntp.org";
 
 FLIPDOTS display(&Serial2);
 struct tm *timeInfo;
-
-void displayTest(void *params)
-{
-    byte buffer[7] = {0};
-    while (true)
-    {
-        for (uint8_t i = 0; i < 7; i++)
-        {
-            buffer[i] = 1 << i;
-        }
-        display.write(buffer);
-        digitalWrite(LED_BUILTIN, HIGH);
-        vTaskDelay(1000);
-        for (uint8_t i = 0; i < 7; i++)
-        {
-            buffer[i] = ~(1 << i);
-        }
-        display.write(buffer);
-        digitalWrite(LED_BUILTIN, LOW);
-        vTaskDelay(1000);
-    }
-}
 
 void displayError()
 {
@@ -62,7 +41,7 @@ bool displayTime()
 #if DEBUG
     Serial.printf("Time: %s\n", timeStr);
 #endif
-    display.write3x3char4(timeStr[0], timeStr[1], timeStr[2], timeStr[3]);
+    display.write3x3char4(timeStr);
     return true;
 }
 
@@ -73,21 +52,27 @@ void taskDisplayLoader(void *params)
     switch (type)
     {
     case 1:
-        while (true)
+    {
+        const byte frames[][3] = {
+            {0b010, 0b010, 0b000},
+            {0b100, 0b010, 0b000},
+            {0b000, 0b110, 0b000},
+            {0b000, 0b010, 0b100},
+            {0b000, 0b010, 0b010},
+            {0b000, 0b010, 0b001},
+            {0b000, 0b011, 0b000},
+            {0b001, 0b010, 0b000},
+        };
+        for (uint8_t i = 0;; i++)
         {
-            buffer[4] = 0;
-            buffer[2] = 0b00001000;
+            uint8_t f = i % 8;
+            buffer[2] = frames[f][0] << 2;
+            buffer[3] = frames[f][1] << 2;
+            buffer[4] = frames[f][2] << 2;
             display.write(buffer);
-            vTaskDelay(250);
-            buffer[2] = 0;
-            buffer[3] = 0b00001000;
-            display.write(buffer);
-            vTaskDelay(250);
-            buffer[3] = 0;
-            buffer[4] = 0b00001000;
-            display.write(buffer);
-            vTaskDelay(250);
+            vTaskDelay(125);
         }
+    }
     case 0:
     default:
         while (true)
@@ -109,7 +94,7 @@ void taskUpdateClock(void *params)
 {
     auto initialDelay = (uint32_t)params;
 #if DEBUG
-    Serial.printf("Initial delay: %is\n", initialDelay / 1000);
+    Serial.printf("Initial delay: %ims\n", initialDelay);
 #endif
     vTaskDelay(initialDelay);
 
@@ -117,7 +102,7 @@ void taskUpdateClock(void *params)
     while (true)
     {
         displayTime();
-        vTaskDelayUntil(&lastWakeTime, 60 * 1000);
+        vTaskDelayUntil(&lastWakeTime, UPDATE_EVERY_SECOND ? 1000 : 60000);
     }
 }
 
@@ -137,7 +122,7 @@ bool connectWiFiAndConfigTime()
     long startTime = xTaskGetTickCount();
     while (WiFi.status() != WL_CONNECTED && (xTaskGetTickCount() - startTime) < WIFI_TIMEOUT)
     {
-        vTaskDelay(500);
+        delay(500);
     }
     if (WiFi.status() != WL_CONNECTED) // Couldn't connect to WiFi
     {
@@ -199,8 +184,15 @@ void setup()
         while (1)
             ;
     }
+#if UPDATE_EVERY_SECOND
+    uint32_t initialDelay = 0;
+#else
     displayTime();
-    uint32_t initialDelay = (59 - timeInfo->tm_sec) * 1000 + 500;
+    struct timeval tv_now;
+    gettimeofday(&tv_now, NULL);
+    uint32_t msOffset = tv_now.tv_usec / 1000 + 850; // adjust for edge variance;
+    uint32_t initialDelay = (58 - timeInfo->tm_sec) * 1000 + msOffset;
+#endif
     xTaskCreate(taskUpdateClock, "taskUpdateClock", 2048, (void *)initialDelay, 1, NULL);
 }
 

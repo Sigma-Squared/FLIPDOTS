@@ -85,15 +85,15 @@ void FLIPDOTS::write(const byte data[7], bool autoUpdate)
 
 void FLIPDOTS::setInverted(bool inverted)
 {
-    this->inverted = !inverted;
+    this->inverted = inverted;
 }
 
-void FLIPDOTS::write3x3char4(char char1, char char2, char char3, char char4)
+void FLIPDOTS::write3x3char4(const char *charArray)
 {
-    const byte *g1 = get3x3FontGlyph(char1);
-    const byte *g2 = get3x3FontGlyph(char2);
-    const byte *g3 = get3x3FontGlyph(char3);
-    const byte *g4 = get3x3FontGlyph(char4);
+    const byte *g1 = get3x3FontGlyph(charArray[0]);
+    const byte *g2 = get3x3FontGlyph(charArray[1]);
+    const byte *g3 = get3x3FontGlyph(charArray[2]);
+    const byte *g4 = get3x3FontGlyph(charArray[3]);
 
     byte data[7] = {0};
     for (uint8_t i = 0; i < 3; i++)
@@ -128,5 +128,5 @@ const byte *FLIPDOTS::get3x3FontGlyph(char c)
     {
         return font3x3Glyphs[c - '0' + 26];
     }
-    return font3x3Glyphs[36]; // Char not in font, return empty character
+    return font3x3Glyphs[36]; // char not in font, return empty glyph
 }

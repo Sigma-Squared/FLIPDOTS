@@ -11,7 +11,7 @@ public:
     FLIPDOTS(HardwareSerial *serial, uint8_t address = 0xff, bool inverted = false) : Serial(serial), address(address), inverted(inverted) {}
     void begin(unsigned long baudRate = 9600, unsigned long ms = 1000);
     void update();
-    void write3x3char4(char char1, char char2, char char3, char char4);
+    void write3x3char4(const char *charArray);
     void write(const byte data[7], bool autoUpdate = true);
     void clear();
     void setInverted(bool inverted);
