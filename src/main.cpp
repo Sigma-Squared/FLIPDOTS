@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include "FLIPDOTS.h"
+#include "GOL.h"
 
 #define DEBUG 1
 #define WIFI_TIMEOUT 10000
@@ -48,11 +49,11 @@ bool displayTime()
 void taskDisplayLoader(void *params)
 {
     uint8_t type = (long)params;
-    byte buffer[7] = {0};
     switch (type)
     {
     case 1:
     {
+        byte buffer[7] = {0};
         const byte frames[][3] = {
             {0b010, 0b010, 0b000},
             {0b100, 0b010, 0b000},
@@ -73,8 +74,20 @@ void taskDisplayLoader(void *params)
             vTaskDelay(125);
         }
     }
+    case 2:
+    {
+        byte buffer[7] = {0};
+        while (true)
+        {
+            display.write(buffer);
+            GOL(buffer);
+            vTaskDelay(250);
+        }
+    }
     case 0:
     default:
+    {
+        byte buffer[7] = {0};
         while (true)
         {
             buffer[3] = 0b00010000;
@@ -87,6 +100,7 @@ void taskDisplayLoader(void *params)
             display.write(buffer);
             vTaskDelay(250);
         }
+    }
     }
 }
 
@@ -110,7 +124,7 @@ bool connectWiFiAndConfigTime()
 {
     // Show loading screen 1
     TaskHandle_t showLoaderTask;
-    xTaskCreate(taskDisplayLoader, "taskDisplayLoader", 1024, (void *)0, 1, &showLoaderTask);
+    xTaskCreate(taskDisplayLoader, "taskDisplayLoader", 1024, (void *)2, 1, &showLoaderTask);
 
     // Connect to WiFi
     WiFi.mode(WIFI_STA);
@@ -119,8 +133,8 @@ bool connectWiFiAndConfigTime()
     Serial.print("Connecting Wifi...");
 #endif
     WiFi.begin(ssid, password);
-    long startTime = xTaskGetTickCount();
-    while (WiFi.status() != WL_CONNECTED && (xTaskGetTickCount() - startTime) < WIFI_TIMEOUT)
+    long startTime = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - startTime) < WIFI_TIMEOUT)
     {
         delay(500);
     }
@@ -137,8 +151,8 @@ bool connectWiFiAndConfigTime()
 #endif
 
     // Show loading screen 2
-    vTaskDelete(showLoaderTask);
-    xTaskCreate(taskDisplayLoader, "taskDisplayLoader", 1024, (void *)1, 1, &showLoaderTask);
+    //vTaskDelete(showLoaderTask);
+    //xTaskCreate(taskDisplayLoader, "taskDisplayLoader", 1024, (void *)1, 1, &showLoaderTask);
 
     // Configure time
 #if DEBUG
@@ -184,14 +198,20 @@ void setup()
         while (1)
             ;
     }
+
+    display.setInverted(true);
+    display.clear();
+    display.setInverted(false);
+    delay(250);
+
 #if UPDATE_EVERY_SECOND
     uint32_t initialDelay = 0;
 #else
     displayTime();
     struct timeval tv_now;
     gettimeofday(&tv_now, NULL);
-    uint32_t msOffset = tv_now.tv_usec / 1000 + 850; // adjust for edge variance;
-    uint32_t initialDelay = (58 - timeInfo->tm_sec) * 1000 + msOffset;
+    uint32_t msOffset = tv_now.tv_usec / 1000; // adjust for edge variance;
+    uint32_t initialDelay = (59 - timeInfo->tm_sec) * 1000 + msOffset;
 #endif
     xTaskCreate(taskUpdateClock, "taskUpdateClock", 2048, (void *)initialDelay, 1, NULL);
 }
