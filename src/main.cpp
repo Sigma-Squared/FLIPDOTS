@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <BluetoothSerial.h>
+#include <Preferences.h>
 #include "FLIPDOTS.h"
 #include "GOL.h"
 
@@ -8,16 +9,26 @@
 #error Bluetooth is not enabled! Please run `make menuconfig` to and enable it
 #endif
 
-#define DEBUG 1
+#define DEBUG 0
 #define WIFI_TIMEOUT 10000
+#define BT_TIMEOUT 10000
 #define NTP_CONFIGTIME_TRYCOUNT 4
 #define UPDATE_EVERY_SECOND 0
+#define SSID_MAXLEN 32
+#define WIFI_PASS_MAXLEN 64
 
-const char *ssid = "Skynet";
-const char *password = "";
+#define LOADINGSCREEN_GENERIC 0
+#define LOADINGSCREEN_BLUETOOTH 1
+#define LOADINGSCREEN_GLIDER 2
+
+#define CONFIGURED_VIA_BT 0
+#define CONFIGURED_VIA_NVS 1
+
 const char *ntpServer = "pool.ntp.org";
 
 FLIPDOTS display(&Serial2);
+BluetoothSerial SerialBT;
+Preferences preferences;
 struct tm *timeInfo;
 
 void displayError()
@@ -57,30 +68,26 @@ void taskDisplayLoader(void *params)
     uint8_t type = (long)params;
     switch (type)
     {
-    case 1:
+    case LOADINGSCREEN_BLUETOOTH:
     {
         byte buffer[7] = {0};
-        const byte frames[][3] = {
-            {0b010, 0b010, 0b000},
-            {0b100, 0b010, 0b000},
-            {0b000, 0b110, 0b000},
-            {0b000, 0b010, 0b100},
-            {0b000, 0b010, 0b010},
-            {0b000, 0b010, 0b001},
-            {0b000, 0b011, 0b000},
-            {0b001, 0b010, 0b000},
-        };
-        for (uint8_t i = 0;; i++)
+        byte frame[7] = {
+            0b00000000,
+            0b00001000,
+            0b00001100,
+            0b00001000,
+            0b00001100,
+            0b00001000,
+            0b00000000};
+        while (true)
         {
-            uint8_t f = i % 8;
-            buffer[2] = frames[f][0] << 2;
-            buffer[3] = frames[f][1] << 2;
-            buffer[4] = frames[f][2] << 2;
+            display.write(frame);
+            vTaskDelay(250);
             display.write(buffer);
-            vTaskDelay(125);
-        }
+            vTaskDelay(250);
+        };
     }
-    case 2:
+    case LOADINGSCREEN_GLIDER:
     {
         byte buffer[7] = {
             0b00000000,
@@ -93,24 +100,11 @@ void taskDisplayLoader(void *params)
         while (true)
         {
             display.write(buffer);
-#if DEBUG
-            for (uint8_t i = 0; i < 7; i++)
-            {
-                if (i == 0)
-                    Serial.println("--------");
-                for (int j = 0; j < 8; j++)
-                {
-                    Serial.print(buffer[i] & (1 << j) ? "1" : "0");
-                    if (j == 7)
-                        Serial.println();
-                }
-            }
-#endif
             GOL(buffer);
             vTaskDelay(250);
         }
     }
-    case 0:
+    case LOADINGSCREEN_GENERIC:
     default:
     {
         byte buffer[7] = {0};
@@ -146,11 +140,53 @@ void taskUpdateClock(void *params)
     }
 }
 
+uint8_t getCredentialsViaBluetoothOrNVS(char *ssid, char *password)
+{
+    // Attempt to receive WiFI credentials via Bluetooth
+#if DEBUG
+    Serial.print("Connecting Bluetooth.");
+#endif
+    SerialBT.begin("FLIPDOTS Clock");
+    long startTime = millis();
+    while (!SerialBT.connected() && (millis() - startTime) < BT_TIMEOUT)
+    {
+#if DEBUG
+        Serial.print('.');
+#endif
+        delay(500);
+    }
+    if (SerialBT.connected()) // Configure via Bluetooth
+    {
+#if DEBUG
+        Serial.println("Connected");
+#endif
+        SerialBT.setTimeout(100000);
+        SerialBT.println("Please enter WIFI SSID:");
+        SerialBT.readBytesUntil('\r', ssid, SSID_MAXLEN * sizeof(char));
+        SerialBT.println("Please enter WIFI password:");
+        SerialBT.readBytesUntil('\r', password, WIFI_PASS_MAXLEN * sizeof(char));
+        if (password[0] == '\n') // remove leading whitespace
+            memmove(password, password + 1, WIFI_PASS_MAXLEN - 1);
+        SerialBT.printf("Using WiFi \"%s\" with credential \"%s\"\n", ssid, password);
+        delay(500);
+        SerialBT.end();
+        return CONFIGURED_VIA_BT;
+    }
+    else // Didn't connect, configure via stored information on disk instead
+    {
+#if DEBUG
+        Serial.println("Didn't sync via Bluetooth. Loading credentials from NVS instead.");
+#endif
+        preferences.getBytes("ssid", ssid, SSID_MAXLEN * sizeof(char));
+        preferences.getBytes("password", password, WIFI_PASS_MAXLEN * sizeof(char));
+        return CONFIGURED_VIA_NVS;
+    }
+}
+
 bool connectWiFiAndConfigTime(const char *ssid, const char *password)
 {
     // Connect to WiFi
     WiFi.mode(WIFI_STA);
-    digitalWrite(LED_BUILTIN, HIGH);
 #if DEBUG
     Serial.print("Connecting Wifi...");
 #endif
@@ -193,7 +229,6 @@ bool connectWiFiAndConfigTime(const char *ssid, const char *password)
     // Cleanup
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
-    digitalWrite(LED_BUILTIN, LOW);
     return true;
 }
 
@@ -206,17 +241,47 @@ void setup()
     timeInfo = new tm();
     pinMode(LED_BUILTIN, OUTPUT);
     display.begin();
-
-    // Show loading screen & connect Wifi & configure time
+    preferences.begin("flipdots", false);
     TaskHandle_t showLoaderTask;
-    xTaskCreate(taskDisplayLoader, "taskDisplayLoader", 2048, (void *)2, 1, &showLoaderTask);
-    if (!connectWiFiAndConfigTime(ssid, password))
+    char ssid[SSID_MAXLEN] = "";
+    char password[WIFI_PASS_MAXLEN] = "";
+
+    xTaskCreate(taskDisplayLoader, "taskDisplayLoader", 1024, (void *)LOADINGSCREEN_BLUETOOTH, 1, &showLoaderTask);
+    uint8_t configuredFrom = getCredentialsViaBluetoothOrNVS(ssid, password);
+    vTaskDelete(showLoaderTask);
+
+    if (strlen(ssid) == 0 || strlen(password) == 0) // No credentials
     {
-        vTaskDelete(showLoaderTask);
+#if DEBUG
+        Serial.println("Failed to load WiFi credentials from anywhere.");
+#endif
         displayError();
         while (1)
             ;
     }
+
+    // Show loading screen & connect Wifi & configure time
+    xTaskCreate(taskDisplayLoader, "taskDisplayLoader", 1024, (void *)LOADINGSCREEN_GLIDER, 1, &showLoaderTask);
+    digitalWrite(LED_BUILTIN, HIGH);
+#if DEBUG
+    Serial.printf("Using WiFi \"%s\" with credential \"%s\"\n", ssid, password);
+#endif
+    if (!connectWiFiAndConfigTime(ssid, password))
+    {
+        vTaskDelete(showLoaderTask);
+        digitalWrite(LED_BUILTIN, LOW);
+        displayError();
+        while (1)
+            ;
+    }
+    // WiFi success, save credentials in non-volatile storage for next boot (unless loaded from non-volatile storage)
+    if (configuredFrom != CONFIGURED_VIA_NVS)
+    {
+        preferences.putBytes("ssid", (const char *)ssid, strlen(ssid));
+        preferences.putBytes("password", (const char *)password, strlen(password));
+        preferences.end();
+    }
+    digitalWrite(LED_BUILTIN, LOW);
     vTaskDelete(showLoaderTask);
 
     // short animation, then show time
