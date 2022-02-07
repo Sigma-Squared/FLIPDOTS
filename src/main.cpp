@@ -1,7 +1,12 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <BluetoothSerial.h>
 #include "FLIPDOTS.h"
 #include "GOL.h"
+
+#if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
+#error Bluetooth is not enabled! Please run `make menuconfig` to and enable it
+#endif
 
 #define DEBUG 1
 #define WIFI_TIMEOUT 10000
@@ -20,9 +25,9 @@ void displayError()
     const byte errorDisplay[] = {
         0b00000000,
         0b00001000,
-        0b00001000,
-        0b00001000,
         0b00000000,
+        0b00001000,
+        0b00001000,
         0b00001000,
         0b00000000};
     display.write(errorDisplay);
@@ -33,8 +38,9 @@ bool displayTime()
     time_t now;
     time(&now);
     localtime_r(&now, timeInfo);
-    if (timeInfo->tm_year <= (2016 - 1900))
+    if (timeInfo->tm_year <= (2016 - 1900)) // time is not valid
     {
+        displayError();
         return false;
     }
     char timeStr[] = "0000";
@@ -76,10 +82,30 @@ void taskDisplayLoader(void *params)
     }
     case 2:
     {
-        byte buffer[7] = {0};
+        byte buffer[7] = {
+            0b00000000,
+            0b00000000,
+            0b00000000,
+            0b00000000,
+            0b00110000,
+            0b01010000,
+            0b00010000};
         while (true)
         {
             display.write(buffer);
+#if DEBUG
+            for (uint8_t i = 0; i < 7; i++)
+            {
+                if (i == 0)
+                    Serial.println("--------");
+                for (int j = 0; j < 8; j++)
+                {
+                    Serial.print(buffer[i] & (1 << j) ? "1" : "0");
+                    if (j == 7)
+                        Serial.println();
+                }
+            }
+#endif
             GOL(buffer);
             vTaskDelay(250);
         }
@@ -120,12 +146,8 @@ void taskUpdateClock(void *params)
     }
 }
 
-bool connectWiFiAndConfigTime()
+bool connectWiFiAndConfigTime(const char *ssid, const char *password)
 {
-    // Show loading screen 1
-    TaskHandle_t showLoaderTask;
-    xTaskCreate(taskDisplayLoader, "taskDisplayLoader", 1024, (void *)2, 1, &showLoaderTask);
-
     // Connect to WiFi
     WiFi.mode(WIFI_STA);
     digitalWrite(LED_BUILTIN, HIGH);
@@ -143,16 +165,11 @@ bool connectWiFiAndConfigTime()
 #if DEBUG
         Serial.println("Failed.");
 #endif
-        vTaskDelete(showLoaderTask);
         return false;
     }
 #if DEBUG
     Serial.println("Connected.");
 #endif
-
-    // Show loading screen 2
-    //vTaskDelete(showLoaderTask);
-    //xTaskCreate(taskDisplayLoader, "taskDisplayLoader", 1024, (void *)1, 1, &showLoaderTask);
 
     // Configure time
 #if DEBUG
@@ -165,7 +182,6 @@ bool connectWiFiAndConfigTime()
     }
     if (!getLocalTime(timeInfo)) // Couldn't configure time
     {
-        vTaskDelete(showLoaderTask);
 #if DEBUG
         Serial.println("Failed");
 #endif
@@ -175,7 +191,6 @@ bool connectWiFiAndConfigTime()
     Serial.println("Done.");
 #endif
     // Cleanup
-    vTaskDelete(showLoaderTask);
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
     digitalWrite(LED_BUILTIN, LOW);
@@ -192,13 +207,19 @@ void setup()
     pinMode(LED_BUILTIN, OUTPUT);
     display.begin();
 
-    if (!connectWiFiAndConfigTime())
+    // Show loading screen & connect Wifi & configure time
+    TaskHandle_t showLoaderTask;
+    xTaskCreate(taskDisplayLoader, "taskDisplayLoader", 2048, (void *)2, 1, &showLoaderTask);
+    if (!connectWiFiAndConfigTime(ssid, password))
     {
+        vTaskDelete(showLoaderTask);
         displayError();
         while (1)
             ;
     }
+    vTaskDelete(showLoaderTask);
 
+    // short animation, then show time
     display.setInverted(true);
     display.clear();
     display.setInverted(false);
