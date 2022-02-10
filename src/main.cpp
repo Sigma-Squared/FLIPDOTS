@@ -213,6 +213,7 @@ uint8_t getCredentialsViaBluetoothOrNVS(char *ssid, char *password, int *gmtOffs
     }
     else // Didn't connect, configure via stored information on disk instead
     {
+        SerialBT.end();
 #if DEBUG
         Serial.println("Didn't sync via Bluetooth. Loading credentials from NVS instead.");
 #endif
