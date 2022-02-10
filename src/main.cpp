@@ -140,7 +140,21 @@ void taskUpdateClock(void *params)
     }
 }
 
-uint8_t getCredentialsViaBluetoothOrNVS(char *ssid, char *password)
+void cleanInput(char *input)
+{
+    // remove leading and trailing whitespace
+    uint len = strlen(input);
+    uint start = 0;
+    while (isspace(input[start++]))
+        ;
+    memmove(input, input + start - 1, len - start + 2);
+    for (uint end = len - 1; isspace(input[end]); end--)
+    {
+        input[end] = '\0';
+    }
+}
+
+uint8_t getCredentialsViaBluetoothOrNVS(char *ssid, char *password, int *gmtOffset, int *daylightOffset)
 {
     // Attempt to receive WiFI credentials via Bluetooth
 #if DEBUG
@@ -161,13 +175,28 @@ uint8_t getCredentialsViaBluetoothOrNVS(char *ssid, char *password)
         Serial.println("Connected");
 #endif
         SerialBT.setTimeout(100000);
+
         SerialBT.println("Please enter WIFI SSID:");
         SerialBT.readBytesUntil('\r', ssid, SSID_MAXLEN * sizeof(char));
+        cleanInput(ssid);
+
         SerialBT.println("Please enter WIFI password:");
         SerialBT.readBytesUntil('\r', password, WIFI_PASS_MAXLEN * sizeof(char));
-        if (password[0] == '\n') // remove leading whitespace
-            memmove(password, password + 1, WIFI_PASS_MAXLEN - 1);
-        SerialBT.printf("Using WiFi \"%s\" with credential \"%s\"\n", ssid, password);
+        cleanInput(password);
+
+        char gmtOffsetStr[10] = "";
+        SerialBT.println("Please enter GMT offset in seconds:");
+        SerialBT.readBytesUntil('\r', gmtOffsetStr, WIFI_PASS_MAXLEN * sizeof(char));
+        cleanInput(gmtOffsetStr);
+        *gmtOffset = atoi(gmtOffsetStr);
+
+        char daylightOffsetStr[10] = "";
+        SerialBT.println("Please enter daylight offset in seconds:");
+        SerialBT.readBytesUntil('\r', daylightOffsetStr, WIFI_PASS_MAXLEN * sizeof(char));
+        cleanInput(daylightOffsetStr);
+        *daylightOffset = atoi(daylightOffsetStr);
+
+        SerialBT.printf("Using WiFi \"%s\" with credential \"%s\", GMT offset %i, daylight offset %i. Disconnecting.\n", ssid, password, *gmtOffset, *daylightOffset);
         delay(500);
         SerialBT.end();
         return CONFIGURED_VIA_BT;
@@ -179,11 +208,13 @@ uint8_t getCredentialsViaBluetoothOrNVS(char *ssid, char *password)
 #endif
         preferences.getBytes("ssid", ssid, SSID_MAXLEN * sizeof(char));
         preferences.getBytes("password", password, WIFI_PASS_MAXLEN * sizeof(char));
+        *gmtOffset = preferences.getInt("gmtOffset", 0);
+        *daylightOffset = preferences.getInt("daylightOffset", 0);
         return CONFIGURED_VIA_NVS;
     }
 }
 
-bool connectWiFiAndConfigTime(const char *ssid, const char *password)
+bool connectWiFiAndConfigTime(const char *ssid, const char *password, int gmtOffset, int daylightOffset)
 {
     // Connect to WiFi
     WiFi.mode(WIFI_STA);
@@ -214,7 +245,7 @@ bool connectWiFiAndConfigTime(const char *ssid, const char *password)
     uint8_t tryCount = NTP_CONFIGTIME_TRYCOUNT;
     while (!getLocalTime(timeInfo) && tryCount--)
     {
-        configTime(-28800, 0, ntpServer);
+        configTime(gmtOffset, daylightOffset, ntpServer);
     }
     if (!getLocalTime(timeInfo)) // Couldn't configure time
     {
@@ -245,9 +276,11 @@ void setup()
     TaskHandle_t showLoaderTask;
     char ssid[SSID_MAXLEN] = "";
     char password[WIFI_PASS_MAXLEN] = "";
+    int gmtOffset = 0;
+    int daylightOffset = 0;
 
     xTaskCreate(taskDisplayLoader, "taskDisplayLoader", 1024, (void *)LOADINGSCREEN_BLUETOOTH, 1, &showLoaderTask);
-    uint8_t configuredFrom = getCredentialsViaBluetoothOrNVS(ssid, password);
+    uint8_t configuredFrom = getCredentialsViaBluetoothOrNVS(ssid, password, &gmtOffset, &daylightOffset);
     vTaskDelete(showLoaderTask);
 
     if (strlen(ssid) == 0 || strlen(password) == 0) // No credentials
@@ -266,7 +299,7 @@ void setup()
 #if DEBUG
     Serial.printf("Using WiFi \"%s\" with credential \"%s\"\n", ssid, password);
 #endif
-    if (!connectWiFiAndConfigTime(ssid, password))
+    if (!connectWiFiAndConfigTime(ssid, password, gmtOffset, daylightOffset))
     {
         vTaskDelete(showLoaderTask);
         digitalWrite(LED_BUILTIN, LOW);
@@ -279,8 +312,10 @@ void setup()
     {
         preferences.putBytes("ssid", (const char *)ssid, strlen(ssid));
         preferences.putBytes("password", (const char *)password, strlen(password));
-        preferences.end();
+        preferences.putInt("gmtOffset", gmtOffset);
+        preferences.putInt("daylightOffset", daylightOffset);
     }
+    preferences.end();
     digitalWrite(LED_BUILTIN, LOW);
     vTaskDelete(showLoaderTask);
 
