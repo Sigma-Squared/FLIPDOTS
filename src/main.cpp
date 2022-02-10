@@ -134,7 +134,7 @@ void taskUpdateClock(void *params)
     // Initial delay lines up the task so it executes exactly when the next minute changes. Then, it runs periodically every minute.
     // The initial delay is very important, if it's off by an amount, every single update will be off by the same amount.
     // It's also important the the task initally fires AFTER the minute has changed, otherwise it wil read the time milliseconds
-    // before it's about to change, resulting in the clock being always a minute behind. That is the purpose of the msOffset.
+    // before it's about to change, resulting in the clock being always a minute behind.
     getTime();
     uint8_t oldMinute = timeInfo->tm_min;
     // wait for minute to change
