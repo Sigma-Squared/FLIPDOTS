@@ -13,9 +13,9 @@
 #define WIFI_TIMEOUT 10000
 #define BT_TIMEOUT 10000
 #define NTP_CONFIGTIME_TRYCOUNT 4
-#define UPDATE_EVERY_SECOND 0
 #define SSID_MAXLEN 32
 #define WIFI_PASS_MAXLEN 64
+#define MINUTE_EDGE_CHECKPERIOD 100
 
 #define LOADINGSCREEN_GENERIC 0
 #define LOADINGSCREEN_BLUETOOTH 1
@@ -23,8 +23,6 @@
 
 #define CONFIGURED_VIA_BT 0
 #define CONFIGURED_VIA_NVS 1
-
-const char *ntpServer = "pool.ntp.org";
 
 FLIPDOTS display(&Serial2);
 BluetoothSerial SerialBT;
@@ -44,12 +42,19 @@ void displayError()
     display.write(errorDisplay);
 }
 
-bool displayTime()
+bool getTime()
 {
     time_t now;
     time(&now);
     localtime_r(&now, timeInfo);
     if (timeInfo->tm_year <= (2016 - 1900)) // time is not valid
+        return false;
+    return true;
+}
+
+bool displayTime()
+{
+    if (!getTime())
     {
         displayError();
         return false;
@@ -126,17 +131,25 @@ void taskDisplayLoader(void *params)
 
 void taskUpdateClock(void *params)
 {
-    auto initialDelay = (uint32_t)params;
-#if DEBUG
-    Serial.printf("Initial delay: %ims\n", initialDelay);
-#endif
-    vTaskDelay(initialDelay);
+    // Initial delay lines up the task so it executes exactly when the next minute changes. Then, it runs periodically every minute.
+    // The initial delay is very important, if it's off by an amount, every single update will be off by the same amount.
+    // It's also important the the task initally fires AFTER the minute has changed, otherwise it wil read the time milliseconds
+    // before it's about to change, resulting in the clock being always a minute behind. That is the purpose of the msOffset.
+    getTime();
+    uint8_t oldMinute = timeInfo->tm_min;
+    // wait for minute to change
+    while (timeInfo->tm_min == oldMinute)
+    {
+        vTaskDelay(MINUTE_EDGE_CHECKPERIOD);
+        getTime();
+    }
 
+    // we are now synchronized with minute change, run every 60s
     TickType_t lastWakeTime = xTaskGetTickCount();
     while (true)
     {
         displayTime();
-        vTaskDelayUntil(&lastWakeTime, UPDATE_EVERY_SECOND ? 1000 : 60000);
+        vTaskDelayUntil(&lastWakeTime, 60000);
     }
 }
 
@@ -164,9 +177,6 @@ uint8_t getCredentialsViaBluetoothOrNVS(char *ssid, char *password, int *gmtOffs
     long startTime = millis();
     while (!SerialBT.connected() && (millis() - startTime) < BT_TIMEOUT)
     {
-#if DEBUG
-        Serial.print('.');
-#endif
         delay(500);
     }
     if (SerialBT.connected()) // Configure via Bluetooth
@@ -186,13 +196,13 @@ uint8_t getCredentialsViaBluetoothOrNVS(char *ssid, char *password, int *gmtOffs
 
         char gmtOffsetStr[10] = "";
         SerialBT.println("Please enter GMT offset in seconds:");
-        SerialBT.readBytesUntil('\r', gmtOffsetStr, WIFI_PASS_MAXLEN * sizeof(char));
+        SerialBT.readBytesUntil('\r', gmtOffsetStr, sizeof(gmtOffsetStr));
         cleanInput(gmtOffsetStr);
         *gmtOffset = atoi(gmtOffsetStr);
 
         char daylightOffsetStr[10] = "";
         SerialBT.println("Please enter daylight offset in seconds:");
-        SerialBT.readBytesUntil('\r', daylightOffsetStr, WIFI_PASS_MAXLEN * sizeof(char));
+        SerialBT.readBytesUntil('\r', daylightOffsetStr, sizeof(gmtOffsetStr));
         cleanInput(daylightOffsetStr);
         *daylightOffset = atoi(daylightOffsetStr);
 
@@ -245,7 +255,7 @@ bool connectWiFiAndConfigTime(const char *ssid, const char *password, int gmtOff
     uint8_t tryCount = NTP_CONFIGTIME_TRYCOUNT;
     while (!getLocalTime(timeInfo) && tryCount--)
     {
-        configTime(gmtOffset, daylightOffset, ntpServer);
+        configTime(gmtOffset, daylightOffset, "pool.ntp.org");
     }
     if (!getLocalTime(timeInfo)) // Couldn't configure time
     {
@@ -324,17 +334,8 @@ void setup()
     display.clear();
     display.setInverted(false);
     delay(250);
-
-#if UPDATE_EVERY_SECOND
-    uint32_t initialDelay = 0;
-#else
     displayTime();
-    struct timeval tv_now;
-    gettimeofday(&tv_now, NULL);
-    uint32_t msOffset = tv_now.tv_usec / 1000; // adjust for edge variance;
-    uint32_t initialDelay = (59 - timeInfo->tm_sec) * 1000 + msOffset;
-#endif
-    xTaskCreate(taskUpdateClock, "taskUpdateClock", 2048, (void *)initialDelay, 1, NULL);
+    xTaskCreate(taskUpdateClock, "taskUpdateClock", 2048, NULL, 1, NULL);
 }
 
 void loop()
