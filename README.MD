@@ -16,7 +16,7 @@ This is a clock built using an ESP32 and a 7x7 flipdot display by [Alfa-Zeta](ht
 ### Schematics
 <img src="/docs/FLIPDOTS_bb.png" alt="Android serial settings" width="400"> <img src="/docs/FLIPDOTS_schem.png" alt="Android serial settings" width="400">
 ### Enclosure
-The enclosure was designed in Fusion 360 and aser cut on 5.33mm thick plywood, then stained black.
+The enclosure was designed in Fusion 360 and laser cut on 5.33mm thick plywood, then stained black.
 
 #### SVG for Laser Cutting
 <img src="/docs/enclosure.svg" alt="Android serial settings" width="400">
